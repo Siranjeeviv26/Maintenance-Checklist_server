@@ -1,0 +1,152 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  admin
+  staff
+  supervisor
+}
+
+enum SubmissionStatus {
+  draft
+  submitted
+  approved
+  rejected
+}
+
+enum InputType {
+  boolean
+  text
+  number
+}
+
+enum AssignmentRole {
+  staff
+  supervisor
+}
+
+model User {
+  id                    Int               @id @default(autoincrement())
+  name                  String
+  email                 String            @unique
+  passwordHash          String
+  role                  UserRole
+  isActive              Boolean           @default(true)
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  assignments           ShiftAssignment[]
+  staffSubmissions      ChecklistSubmission[] @relation("StaffSubmissions")
+  supervisorSubmissions ChecklistSubmission[] @relation("SupervisorSubmissions")
+}
+
+model Station {
+  id          Int                 @id @default(autoincrement())
+  name        String
+  code        String              @unique
+  description String?
+  isActive    Boolean             @default(true)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  shifts      Shift[]
+  templates   ChecklistTemplate[]
+  submissions ChecklistSubmission[]
+}
+
+model Shift {
+  id           Int               @id @default(autoincrement())
+  stationId    Int
+  name         String
+  startTime    String
+  endTime      String
+  timezone     String            @default("Asia/Kolkata")
+  isActive     Boolean           @default(true)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  station      Station           @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  assignments  ShiftAssignment[]
+  submissions  ChecklistSubmission[]
+}
+
+model ShiftAssignment {
+  id             Int            @id @default(autoincrement())
+  shiftId        Int
+  userId         Int
+  assignmentRole AssignmentRole
+  assignmentDate DateTime
+  shift          Shift           @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([shiftId, userId, assignmentDate, assignmentRole])
+}
+
+model ChecklistTemplate {
+  id        Int                     @id @default(autoincrement())
+  stationId Int
+  title     String
+  version   Int                     @default(1)
+  isActive  Boolean                 @default(true)
+  createdAt DateTime                @default(now())
+  updatedAt DateTime                @updatedAt
+  station   Station                 @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  items     ChecklistTemplateItem[]
+  submissions ChecklistSubmission[]
+}
+
+model ChecklistTemplateItem {
+  id           Int                     @id @default(autoincrement())
+  templateId   Int
+  label        String
+  isMandatory  Boolean                 @default(false)
+  displayOrder Int
+  inputType    InputType               @default(boolean)
+  template     ChecklistTemplate       @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  responses    ChecklistSubmissionItem[]
+}
+
+model ChecklistSubmission {
+  id                Int                       @id @default(autoincrement())
+  stationId         Int
+  shiftId           Int
+  templateId        Int
+  staffId           Int
+  submissionDate    DateTime
+  status            SubmissionStatus          @default(draft)
+  staffRemark       String?
+  submittedAt       DateTime?
+  supervisorId      Int?
+  supervisorComment String?
+  verifiedAt        DateTime?
+  rejectionReason   String?
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  station           Station                   @relation(fields: [stationId], references: [id], onDelete: Cascade)
+  shift             Shift                     @relation(fields: [shiftId], references: [id], onDelete: Cascade)
+  template          ChecklistTemplate         @relation(fields: [templateId], references: [id], onDelete: Cascade)
+  staff             User                      @relation("StaffSubmissions", fields: [staffId], references: [id], onDelete: Cascade)
+  supervisor        User?                     @relation("SupervisorSubmissions", fields: [supervisorId], references: [id])
+  items             ChecklistSubmissionItem[]
+}
+
+model ChecklistSubmissionItem {
+  id             Int                  @id @default(autoincrement())
+  submissionId   Int
+  templateItemId Int
+  completed      Boolean              @default(false)
+  valueText      String?
+  remark         String?
+  submission     ChecklistSubmission  @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  templateItem   ChecklistTemplateItem @relation(fields: [templateItemId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, templateItemId])
+}
