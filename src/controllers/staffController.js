@@ -3,6 +3,8 @@ const ApiError = require("../utils/apiError");
 const { submitChecklistSchema } = require("../validators/staffValidator");
 const { isShiftExpired } = require("../utils/shiftTime");
 
+const APP_TIMEZONE = "Asia/Kolkata";
+
 function parseId(value) {
   const id = Number(value);
   if (!Number.isInteger(id) || id <= 0) {
@@ -11,12 +13,26 @@ function parseId(value) {
   return id;
 }
 
+function dateKeyInTimezone(date, timeZone = APP_TIMEZONE) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
 async function getMyShiftsToday(req, res, next) {
   try {
     const now = new Date();
+    const todayKey = dateKeyInTimezone(now);
     const start = new Date(now);
+    start.setDate(start.getDate() - 1);
     start.setHours(0, 0, 0, 0);
     const end = new Date(now);
+    end.setDate(end.getDate() + 1);
     end.setHours(23, 59, 59, 999);
 
     const assignments = await prisma.shiftAssignment.findMany({
@@ -38,9 +54,12 @@ async function getMyShiftsToday(req, res, next) {
       orderBy: { assignmentDate: "asc" },
     });
 
-    // Check submission status for each assignment
+    const todayAssignments = assignments.filter(
+      (assignment) => dateKeyInTimezone(assignment.assignmentDate) === todayKey
+    );
+
     const enrichedAssignments = await Promise.all(
-      assignments.map(async (assignment) => {
+      todayAssignments.map(async (assignment) => {
         const submission = await prisma.checklistSubmission.findFirst({
           where: {
             shiftId: assignment.shiftId,
