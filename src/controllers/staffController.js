@@ -215,31 +215,58 @@ async function submitChecklist(req, res, next) {
       : assignment.assignmentDate;
 
     const saved = await prisma.$transaction(async (tx) => {
-      const submission = await tx.checklistSubmission.create({
-        data: {
+      const submissionWhere = {
+        shiftId_staffId_submissionDate: {
+          shiftId,
+          staffId: req.user.sub,
+          submissionDate,
+        },
+      };
+      const itemResponses = payload.responses.map((item) => ({
+        templateItemId: item.templateItemId,
+        completed: item.completed ?? false,
+        valueText: item.valueText,
+        remark: item.remark,
+      }));
+      const existingSubmission = await tx.checklistSubmission.findFirst({
+        where: {
+          shiftId,
+          staffId: req.user.sub,
+          submissionDate,
+        },
+        select: { id: true },
+      });
+
+      const submission = await tx.checklistSubmission.upsert({
+        where: submissionWhere,
+        create: {
           stationId: assignment.shift.stationId,
           shiftId,
           templateId: template.id,
           staffId: req.user.sub,
           submissionDate,
           status: "submitted",
-          staffRemark: payload.staffRemark,
+          staffRemark: payload.staffRemark ?? null,
           submittedAt: new Date(),
+          items: {
+            create: itemResponses,
+          },
         },
-      });
-
-      await tx.checklistSubmissionItem.createMany({
-        data: payload.responses.map((item) => ({
-          submissionId: submission.id,
-          templateItemId: item.templateItemId,
-          completed: item.completed ?? false,
-          valueText: item.valueText,
-          remark: item.remark,
-        })),
-      });
-
-      return tx.checklistSubmission.findUnique({
-        where: { id: submission.id },
+        update: {
+          stationId: assignment.shift.stationId,
+          templateId: template.id,
+          status: "submitted",
+          staffRemark: payload.staffRemark ?? null,
+          submittedAt: new Date(),
+          supervisorId: null,
+          supervisorComment: null,
+          verifiedAt: null,
+          rejectionReason: null,
+          items: {
+            deleteMany: {},
+            create: itemResponses,
+          },
+        },
         include: {
           items: true,
           template: {
@@ -249,14 +276,30 @@ async function submitChecklist(req, res, next) {
           },
         },
       });
+
+      return {
+        submission,
+        wasUpdated: Boolean(existingSubmission),
+      };
     });
 
-    res.status(201).json({
+    res.status(saved.wasUpdated ? 200 : 201).json({
       success: true,
-      message: "Checklist submitted successfully.",
-      data: saved,
+      message: saved.wasUpdated
+        ? "Checklist updated successfully."
+        : "Checklist submitted successfully.",
+      data: saved.submission,
     });
   } catch (error) {
+    if (
+      error?.code === "P2002" &&
+      Array.isArray(error.meta?.target) &&
+      error.meta.target.includes("shiftId") &&
+      error.meta.target.includes("staffId") &&
+      error.meta.target.includes("submissionDate")
+    ) {
+      return next(new ApiError(409, "Checklist has already been submitted for this task."));
+    }
     next(error);
   }
 }
