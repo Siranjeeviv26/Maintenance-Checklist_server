@@ -136,6 +136,8 @@ model ChecklistSubmission {
   staff             User                      @relation("StaffSubmissions", fields: [staffId], references: [id], onDelete: Cascade)
   supervisor        User?                     @relation("SupervisorSubmissions", fields: [supervisorId], references: [id])
   items             ChecklistSubmissionItem[]
+
+  @@unique([shiftId, staffId, submissionDate])
 }
 
 model ChecklistSubmissionItem {
