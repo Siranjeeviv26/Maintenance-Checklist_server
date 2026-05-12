@@ -168,3 +168,4 @@ ALTER TABLE "ChecklistSubmissionItem" ADD CONSTRAINT "ChecklistSubmissionItem_su
 
 -- AddForeignKey
 ALTER TABLE "ChecklistSubmissionItem" ADD CONSTRAINT "ChecklistSubmissionItem_templateItemId_fkey" FOREIGN KEY ("templateItemId") REFERENCES "ChecklistTemplateItem"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
