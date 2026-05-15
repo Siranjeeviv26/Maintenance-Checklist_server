@@ -3,7 +3,7 @@ const { z } = require("zod");
 const submitChecklistSchema = z.object({
   responses: z.array(
     z.object({
-      templateItemId: z.number().int().positive(),
+      templateItemId: z.string().min(1),
       completed: z.boolean().optional(),
       valueText: z.string().optional(),
       remark: z.string().optional(),

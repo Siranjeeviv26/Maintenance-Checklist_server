@@ -16,21 +16,19 @@ const userSchema = z.object({
   password: z.string().min(6),
   role: userRoleEnum,
   isActive: z.boolean().optional(),
+  panelName: z.string().optional().nullable(),
 });
 
 const shiftSchema = z.object({
-  stationId: z.number().int().positive(),
+  stationId: z.string().min(1),
   name: z.string().min(2),
   startTime: z.string().min(1),
   endTime: z.string().min(1),
   timezone: z.string().optional(),
   isActive: z.boolean().optional(),
   assignmentDate: z.string().datetime(),
-  assignedStaffIds: z.array(z.number().int().positive()).optional().default([]),
-  assignedSupervisorIds: z
-    .array(z.number().int().positive())
-    .optional()
-    .default([]),
+  assignedStaffIds: z.array(z.string().min(1)).optional().default([]),
+  assignedSupervisorIds: z.array(z.string().min(1)).optional().default([]),
 });
 
 const templateItemSchema = z.object({
@@ -41,7 +39,7 @@ const templateItemSchema = z.object({
 });
 
 const templateSchema = z.object({
-  stationId: z.number().int().positive(),
+  stationId: z.string().min(1),
   title: z.string().min(2),
   version: z.number().int().positive().optional(),
   isActive: z.boolean().optional(),

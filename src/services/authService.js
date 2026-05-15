@@ -1,16 +1,18 @@
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const prisma = require("../config/prisma");
+const { User } = require("../models");
 const env = require("../config/env");
 const ApiError = require("../utils/apiError");
 
 async function login({ email, password }) {
-  const user = await prisma.user.findUnique({
-    where: { email },
-  });
+  const user = await User.findOne({ email });
 
-  if (!user || !user.isActive) {
+  if (!user) {
     throw new ApiError(401, "Invalid email or password.");
+  }
+
+  if (!user.isActive) {
+    throw new ApiError(403, "Your account is inactive. Please contact the administrator.");
   }
 
   const passwordMatches = await bcrypt.compare(password, user.passwordHash);
@@ -19,7 +21,7 @@ async function login({ email, password }) {
   }
 
   const token = jwt.sign(
-    { sub: user.id, email: user.email, role: user.role, name: user.name },
+    { sub: user.id, email: user.email, role: user.role, name: user.name, panelName: user.panelName },
     env.jwtSecret,
     { expiresIn: env.jwtExpiresIn }
   );
@@ -31,6 +33,7 @@ async function login({ email, password }) {
       name: user.name,
       email: user.email,
       role: user.role,
+      panelName: user.panelName,
     },
   };
 }

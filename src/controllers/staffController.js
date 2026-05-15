@@ -1,4 +1,5 @@
-const prisma = require("../config/prisma");
+const mongoose = require("mongoose");
+const { ShiftAssignment, ChecklistTemplate, ChecklistSubmission } = require("../models");
 const ApiError = require("../utils/apiError");
 const { submitChecklistSchema } = require("../validators/staffValidator");
 const { isShiftExpired } = require("../utils/shiftTime");
@@ -6,11 +7,10 @@ const { isShiftExpired } = require("../utils/shiftTime");
 const APP_TIMEZONE = "Asia/Kolkata";
 
 function parseId(value) {
-  const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) {
+  if (!mongoose.Types.ObjectId.isValid(value)) {
     throw new ApiError(400, "Invalid id parameter.");
   }
-  return id;
+  return value;
 }
 
 function dateKeyInTimezone(date, timeZone = APP_TIMEZONE) {
@@ -35,44 +35,32 @@ async function getMyShiftsToday(req, res, next) {
     end.setDate(end.getDate() + 1);
     end.setHours(23, 59, 59, 999);
 
-    const assignments = await prisma.shiftAssignment.findMany({
-      where: {
-        userId: req.user.sub,
-        assignmentRole: "staff",
-        assignmentDate: {
-          gte: start,
-          lte: end,
-        },
-      },
-      include: {
-        shift: {
-          include: {
-            station: true,
-          },
-        },
-      },
-      orderBy: { assignmentDate: "asc" },
-    });
+    const assignments = await ShiftAssignment.find({
+      user: req.user.sub,
+      assignmentRole: "staff",
+      assignmentDate: { $gte: start, $lte: end },
+    })
+      .populate({ path: "shift", populate: { path: "station" } })
+      .sort({ assignmentDate: 1 });
 
     const todayAssignments = assignments.filter(
-      (assignment) => dateKeyInTimezone(assignment.assignmentDate) === todayKey
+      (a) => dateKeyInTimezone(a.assignmentDate) === todayKey
     );
 
     const enrichedAssignments = await Promise.all(
       todayAssignments.map(async (assignment) => {
-        const submission = await prisma.checklistSubmission.findFirst({
-          where: {
-            shiftId: assignment.shiftId,
-            staffId: req.user.sub,
+        const submission = await ChecklistSubmission.findOne(
+          {
+            shift: assignment.shift._id,
+            staff: req.user.sub,
             submissionDate: assignment.assignmentDate,
           },
-          select: { id: true, status: true, submittedAt: true },
-        });
-        return {
-          ...assignment,
-          submissionStatus: submission ? submission.status : "pending",
-          isSubmitted: !!submission,
-        };
+          "status submittedAt"
+        );
+        const aJson = assignment.toJSON();
+        aJson.submissionStatus = submission ? submission.status : "pending";
+        aJson.isSubmitted = Boolean(submission);
+        return aJson;
       })
     );
 
@@ -86,58 +74,44 @@ async function getShiftChecklist(req, res, next) {
   try {
     const shiftId = parseId(req.params.shiftId);
 
-    const assignment = await prisma.shiftAssignment.findFirst({
-      where: {
-        shiftId,
-        userId: req.user.sub,
-        assignmentRole: "staff",
-      },
-      include: {
-        shift: {
-          include: {
-            station: true,
-          },
-        },
-      },
-      orderBy: { assignmentDate: "desc" },
-    });
+    const assignment = await ShiftAssignment.findOne({
+      shift: shiftId,
+      user: req.user.sub,
+      assignmentRole: "staff",
+    })
+      .populate({ path: "shift", populate: { path: "station" } })
+      .sort({ assignmentDate: -1 });
 
     if (!assignment) {
       throw new ApiError(403, "You are not assigned to this shift.");
     }
 
-    const template = await prisma.checklistTemplate.findFirst({
-      where: {
-        stationId: assignment.shift.stationId,
-        isActive: true,
-      },
-      include: {
-        items: { orderBy: { displayOrder: "asc" } },
-      },
-      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-    });
+    const stationRef = assignment.shift.station._id ?? assignment.shift.station;
+    const template = await ChecklistTemplate.findOne({
+      station: stationRef,
+      isActive: true,
+    }).sort({ version: -1, createdAt: -1 });
 
     if (!template) {
       throw new ApiError(404, "No active checklist template found for this station.");
     }
 
-    const existingSubmission = await prisma.checklistSubmission.findFirst({
-      where: {
-        shiftId,
-        staffId: req.user.sub,
-        submissionDate: assignment.assignmentDate,
-      },
-      include: {
-        items: true,
-      },
-      orderBy: { createdAt: "desc" },
-    });
+    const templateJson = template.toJSON();
+    templateJson.items = (templateJson.items || []).sort(
+      (a, b) => a.displayOrder - b.displayOrder
+    );
+
+    const existingSubmission = await ChecklistSubmission.findOne({
+      shift: shiftId,
+      staff: req.user.sub,
+      submissionDate: assignment.assignmentDate,
+    }).sort({ createdAt: -1 });
 
     res.status(200).json({
       success: true,
       data: {
         assignment,
-        template,
+        template: templateJson,
         submission: existingSubmission,
       },
     });
@@ -155,17 +129,13 @@ async function submitChecklist(req, res, next) {
     }
     const payload = parsed.data;
 
-    const assignment = await prisma.shiftAssignment.findFirst({
-      where: {
-        shiftId,
-        userId: req.user.sub,
-        assignmentRole: "staff",
-      },
-      include: {
-        shift: true,
-      },
-      orderBy: { assignmentDate: "desc" },
-    });
+    const assignment = await ShiftAssignment.findOne({
+      shift: shiftId,
+      user: req.user.sub,
+      assignmentRole: "staff",
+    })
+      .populate("shift")
+      .sort({ assignmentDate: -1 });
 
     if (!assignment) {
       throw new ApiError(403, "You are not assigned to this shift.");
@@ -175,16 +145,10 @@ async function submitChecklist(req, res, next) {
       throw new ApiError(400, "Checklist submission is not allowed after shift expiry.");
     }
 
-    const template = await prisma.checklistTemplate.findFirst({
-      where: {
-        stationId: assignment.shift.stationId,
-        isActive: true,
-      },
-      include: {
-        items: true,
-      },
-      orderBy: [{ version: "desc" }, { createdAt: "desc" }],
-    });
+    const template = await ChecklistTemplate.findOne({
+      station: assignment.shift.station,
+      isActive: true,
+    }).sort({ version: -1, createdAt: -1 });
 
     if (!template) {
       throw new ApiError(404, "No active checklist template found for this station.");
@@ -196,7 +160,6 @@ async function submitChecklist(req, res, next) {
     const missingMandatory = template.items.filter((item) => {
       if (!item.isMandatory) return false;
       const response = responseByItemId.get(item.id);
-      // Ensure we check for both existence and completion status
       return !response || response.completed !== true;
     });
 
@@ -204,9 +167,7 @@ async function submitChecklist(req, res, next) {
       throw new ApiError(
         400,
         "Mandatory checklist items must be completed before submission.",
-        {
-          missingItemIds: missingMandatory.map((item) => item.id),
-        }
+        { missingItemIds: missingMandatory.map((item) => item.id) }
       );
     }
 
@@ -214,90 +175,59 @@ async function submitChecklist(req, res, next) {
       ? new Date(payload.submissionDate)
       : assignment.assignmentDate;
 
-    const saved = await prisma.$transaction(async (tx) => {
-      const submissionWhere = {
-        shiftId_staffId_submissionDate: {
-          shiftId,
-          staffId: req.user.sub,
-          submissionDate,
-        },
-      };
-      const itemResponses = payload.responses.map((item) => ({
-        templateItemId: item.templateItemId,
-        completed: item.completed ?? false,
-        valueText: item.valueText,
-        remark: item.remark,
-      }));
-      const existingSubmission = await tx.checklistSubmission.findFirst({
-        where: {
-          shiftId,
-          staffId: req.user.sub,
-          submissionDate,
-        },
-        select: { id: true },
-      });
+    const itemResponses = payload.responses.map((item) => ({
+      templateItemId: item.templateItemId,
+      completed: item.completed ?? false,
+      valueText: item.valueText ?? null,
+      remark: item.remark ?? null,
+    }));
 
-      const submission = await tx.checklistSubmission.upsert({
-        where: submissionWhere,
-        create: {
-          stationId: assignment.shift.stationId,
-          shiftId,
-          templateId: template.id,
-          staffId: req.user.sub,
-          submissionDate,
-          status: "submitted",
-          staffRemark: payload.staffRemark ?? null,
-          submittedAt: new Date(),
-          items: {
-            create: itemResponses,
-          },
-        },
-        update: {
-          stationId: assignment.shift.stationId,
-          templateId: template.id,
-          status: "submitted",
-          staffRemark: payload.staffRemark ?? null,
-          submittedAt: new Date(),
-          supervisorId: null,
-          supervisorComment: null,
-          verifiedAt: null,
-          rejectionReason: null,
-          items: {
-            deleteMany: {},
-            create: itemResponses,
-          },
-        },
-        include: {
-          items: true,
-          template: {
-            include: {
-              items: true,
-            },
-          },
-        },
-      });
-
-      return {
-        submission,
-        wasUpdated: Boolean(existingSubmission),
-      };
+    const existingSubmission = await ChecklistSubmission.findOne({
+      shift: shiftId,
+      staff: req.user.sub,
+      submissionDate,
     });
 
-    res.status(saved.wasUpdated ? 200 : 201).json({
+    const wasUpdated = Boolean(existingSubmission);
+    let submission;
+
+    if (wasUpdated) {
+      existingSubmission.station = assignment.shift.station;
+      existingSubmission.template = template._id;
+      existingSubmission.status = "submitted";
+      existingSubmission.staffRemark = payload.staffRemark ?? null;
+      existingSubmission.submittedAt = new Date();
+      existingSubmission.supervisor = null;
+      existingSubmission.supervisorComment = null;
+      existingSubmission.verifiedAt = null;
+      existingSubmission.rejectionReason = null;
+      existingSubmission.items = itemResponses;
+      submission = await existingSubmission.save();
+    } else {
+      submission = await ChecklistSubmission.create({
+        station: assignment.shift.station,
+        shift: shiftId,
+        template: template._id,
+        staff: req.user.sub,
+        submissionDate,
+        status: "submitted",
+        staffRemark: payload.staffRemark ?? null,
+        submittedAt: new Date(),
+        items: itemResponses,
+      });
+    }
+
+    await submission.populate("template");
+
+    res.status(wasUpdated ? 200 : 201).json({
       success: true,
-      message: saved.wasUpdated
+      message: wasUpdated
         ? "Checklist updated successfully."
         : "Checklist submitted successfully.",
-      data: saved.submission,
+      data: submission,
     });
   } catch (error) {
-    if (
-      error?.code === "P2002" &&
-      Array.isArray(error.meta?.target) &&
-      error.meta.target.includes("shiftId") &&
-      error.meta.target.includes("staffId") &&
-      error.meta.target.includes("submissionDate")
-    ) {
+    if (error.code === 11000) {
       return next(new ApiError(409, "Checklist has already been submitted for this task."));
     }
     next(error);

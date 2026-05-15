@@ -1,18 +1,18 @@
-const prisma = require("../config/prisma");
+const mongoose = require("mongoose");
+const { ChecklistSubmission } = require("../models");
 const ApiError = require("../utils/apiError");
 const { reviewSchema } = require("../validators/supervisorValidator");
 
 function parseId(value) {
-  const id = Number(value);
-  if (!Number.isInteger(id) || id <= 0) {
+  if (!mongoose.Types.ObjectId.isValid(value)) {
     throw new ApiError(400, "Invalid id parameter.");
   }
-  return id;
+  return value;
 }
 
 function hasIncompleteMandatoryItems(submission) {
   const responseMap = new Map(
-    submission.items.map((item) => [item.templateItemId, item.completed === true])
+    submission.items.map((item) => [item.templateItemId.toString(), item.completed === true])
   );
   return submission.template.items.some(
     (item) => item.isMandatory && responseMap.get(item.id) !== true
@@ -22,17 +22,12 @@ function hasIncompleteMandatoryItems(submission) {
 async function listSubmitted(req, res, next) {
   try {
     const status = req.query.status || "submitted";
-    const submissions = await prisma.checklistSubmission.findMany({
-      where: { status },
-      include: {
-        station: true,
-        shift: true,
-        staff: { select: { id: true, name: true, email: true } },
-        items: true,
-        template: { include: { items: true } },
-      },
-      orderBy: { submittedAt: "desc" },
-    });
+    const submissions = await ChecklistSubmission.find({ status })
+      .populate("station")
+      .populate("shift")
+      .populate("staff", "name email")
+      .populate("template")
+      .sort({ submittedAt: -1 });
     res.status(200).json({ success: true, data: submissions });
   } catch (error) {
     next(error);
@@ -47,13 +42,7 @@ async function approveSubmission(req, res, next) {
       throw new ApiError(400, "Validation failed.", parsed.error.flatten());
     }
 
-    const submission = await prisma.checklistSubmission.findUnique({
-      where: { id: submissionId },
-      include: {
-        items: true,
-        template: { include: { items: true } },
-      },
-    });
+    const submission = await ChecklistSubmission.findById(submissionId).populate("template");
 
     if (!submission) throw new ApiError(404, "Submission not found.");
     if (submission.status !== "submitted") {
@@ -63,15 +52,11 @@ async function approveSubmission(req, res, next) {
       throw new ApiError(400, "Supervisors cannot approve incomplete checklists.");
     }
 
-    const updated = await prisma.checklistSubmission.update({
-      where: { id: submissionId },
-      data: {
-        status: "approved",
-        supervisorId: req.user.sub,
-        supervisorComment: parsed.data.supervisorComment,
-        verifiedAt: new Date(),
-      },
-    });
+    submission.status = "approved";
+    submission.supervisor = req.user.sub;
+    submission.supervisorComment = parsed.data.supervisorComment ?? null;
+    submission.verifiedAt = new Date();
+    const updated = await submission.save();
 
     res.status(200).json({
       success: true,
@@ -91,24 +76,18 @@ async function rejectSubmission(req, res, next) {
       throw new ApiError(400, "Validation failed.", parsed.error.flatten());
     }
 
-    const existing = await prisma.checklistSubmission.findUnique({
-      where: { id: submissionId },
-    });
-    if (!existing) throw new ApiError(404, "Submission not found.");
-    if (existing.status !== "submitted") {
+    const submission = await ChecklistSubmission.findById(submissionId);
+    if (!submission) throw new ApiError(404, "Submission not found.");
+    if (submission.status !== "submitted") {
       throw new ApiError(400, "Only submitted checklists can be rejected.");
     }
 
-    const updated = await prisma.checklistSubmission.update({
-      where: { id: submissionId },
-      data: {
-        status: "rejected",
-        supervisorId: req.user.sub,
-        supervisorComment: parsed.data.supervisorComment,
-        rejectionReason: parsed.data.rejectionReason || "Rejected by supervisor.",
-        verifiedAt: new Date(),
-      },
-    });
+    submission.status = "rejected";
+    submission.supervisor = req.user.sub;
+    submission.supervisorComment = parsed.data.supervisorComment ?? null;
+    submission.rejectionReason = parsed.data.rejectionReason || "Rejected by supervisor.";
+    submission.verifiedAt = new Date();
+    const updated = await submission.save();
 
     res.status(200).json({
       success: true,
@@ -122,24 +101,20 @@ async function rejectSubmission(req, res, next) {
 
 async function shiftHistory(req, res, next) {
   try {
-    const where = {};
-    if (req.query.shiftId) where.shiftId = parseId(req.query.shiftId);
+    const filter = {};
+    if (req.query.shiftId) filter.shift = parseId(req.query.shiftId);
     if (req.query.date) {
       const start = new Date(`${req.query.date}T00:00:00.000Z`);
       const end = new Date(`${req.query.date}T23:59:59.999Z`);
-      where.submissionDate = { gte: start, lte: end };
+      filter.submissionDate = { $gte: start, $lte: end };
     }
 
-    const history = await prisma.checklistSubmission.findMany({
-      where,
-      include: {
-        station: true,
-        shift: true,
-        staff: { select: { id: true, name: true, email: true } },
-        supervisor: { select: { id: true, name: true, email: true } },
-      },
-      orderBy: { submissionDate: "desc" },
-    });
+    const history = await ChecklistSubmission.find(filter)
+      .populate("station")
+      .populate("shift")
+      .populate("staff", "name email")
+      .populate("supervisor", "name email")
+      .sort({ submissionDate: -1 });
 
     res.status(200).json({ success: true, data: history });
   } catch (error) {

@@ -4,6 +4,7 @@ const helmet = require("helmet");
 const morgan = require("morgan");
 const routes = require("./routes");
 const env = require("./config/env");
+const { connectDB, disconnectDB } = require("./config/db");
 const errorHandler = require("./middlewares/errorHandler");
 const setupSwagger = require("./config/swagger");
 
@@ -30,7 +31,30 @@ app.use("/api", routes);
 
 app.use(errorHandler);
 
-app.listen(env.port, () => {
+async function start() {
+  try {
+    await connectDB();
+    app.listen(env.port, () => {
+      // eslint-disable-next-line no-console
+      console.log(`Server running on port ${env.port} [${env.nodeEnv}]`);
+    });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to start server:", err);
+    process.exit(1);
+  }
+}
+
+process.on("SIGTERM", async () => {
   // eslint-disable-next-line no-console
-  console.log(`Server running on port ${env.port}`);
+  console.log("SIGTERM received — closing server.");
+  await disconnectDB();
+  process.exit(0);
 });
+
+process.on("SIGINT", async () => {
+  await disconnectDB();
+  process.exit(0);
+});
+
+start();
